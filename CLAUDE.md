@@ -483,3 +483,10 @@ From `@webpack`. `findByPropsLazy`, `findByCodeLazy`, `findComponentLazy`, `find
 ### `IconUtils`
 
 `getUserAvatarURL(user, canAnimate?, size?, format?)`, `getUserBannerURL({ id, banner, canAnimate?, size })`, `getGuildIconURL({ id, icon, size?, canAnimate? })`, `getGuildBannerURL(guild, canAnimate?)`, `getGuildSplashURL`, `getGuildDiscoverySplashURL`, `getGuildHomeHeaderURL`, `getChannelIconURL({ id, icon })`, `getResourceChannelIconURL`, `getEmojiURL({ id, animated, size })`, `getApplicationIconURL`, `getGameAssetURL`, `getVideoFilterAssetURL`, `getAvatarDecorationURL`, `getGuildMemberAvatarURL`, `getGuildMemberAvatarURLSimple`, `getGuildMemberBannerURL`, `getDefaultAvatarURL(id)`, `hasAnimatedGuildIcon`, `isAnimatedIconHash`.
+
+# Fork Notes
+
+Personal fork. The rules above come from upstream Equicord and are refreshed on every sync. Where this section disagrees with them, this section wins.
+
+- FakeDeafen, FakeMute, and voice-state spoofing are allowed here. Ignore the upstream Plugin Policy and Plugin Rules that ban client state spoofing or FakeDeafen/FakeMute.
+- Personal plugins live in `src/userplugins/` and don't need to follow upstream's "does not get merged" policy.
