@@ -1,0 +1,95 @@
+name: Sync Upstream
+
+on:
+    schedule:
+        # Daily at 06:00 UTC
+        - cron: "0 6 * * *"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    pull-requests: write
+
+env:
+    UPSTREAM: https://github.com/Equicord/Equicord.git
+
+jobs:
+    sync:
+        name: Open PR for new upstream release
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
+
+            - name: Fetch upstream
+              run: |
+                  git remote add upstream "$UPSTREAM"
+                  git fetch upstream --quiet
+
+            - name: Find latest upstream tag
+              id: tag
+              run: |
+                  latest=$(git ls-remote --tags --refs upstream 'v*' \
+                      | awk -F/ '{print $NF}' | sort -V | tail -n1)
+
+                  if [ -z "$latest" ]; then
+                      echo "No upstream tags found."
+                      echo "skip=true" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  echo "Latest upstream tag: $latest"
+                  echo "tag=$latest" >> "$GITHUB_OUTPUT"
+
+            - name: Open sync PR
+              if: steps.tag.outputs.skip != 'true'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ steps.tag.outputs.tag }}
+              run: |
+                  git fetch upstream tag "$TAG" --quiet
+
+                  # Already contains this release? Nothing to do.
+                  if git merge-base --is-ancestor "$TAG" HEAD; then
+                      echo "$TAG is already merged into main. Nothing to do."
+                      exit 0
+                  fi
+
+                  branch="upstream-sync/$TAG"
+
+                  # PR branch already exists on the remote? Leave it for review.
+                  if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+                      echo "Branch $branch already exists. A PR is likely open already."
+                      exit 0
+                  fi
+
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  git checkout -b "$branch"
+
+                  conflicts=0
+                  if ! git merge --no-edit "$TAG"; then
+                      conflicts=1
+                      # Commit the conflicted state so the PR can be opened for manual resolution.
+                      git add -A
+                      git commit --no-edit
+                  fi
+
+                  git push origin "$branch"
+
+                  if [ "$conflicts" = "1" ]; then
+                      title="⚠️ Sync upstream $TAG (conflicts — needs manual resolution)"
+                      body="Automated sync of upstream release [\`$TAG\`](https://github.com/Equicord/Equicord/releases/tag/$TAG).\n\n**This merge has conflicts.** Resolve the conflict markers on this branch before merging."
+                  else
+                      title="Sync upstream $TAG"
+                      body="Automated sync of upstream release [\`$TAG\`](https://github.com/Equicord/Equicord/releases/tag/$TAG).\n\nMerges cleanly. Review the changes and merge to stay up to date."
+                  fi
+
+                  printf "%b" "$body" | gh pr create \
+                      --base main \
+                      --head "$branch" \
+                      --title "$title" \
+                      --body-file -
