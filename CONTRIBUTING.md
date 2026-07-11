@@ -1,11 +1,5 @@
 # Introduction
 
-> [!NOTE]
-> **AI Usage Notice**
->
-> Your contribution must be majority human written! Some AI assistance like inline suggestions is acceptable, but "vibecoded" contributions are not welcome.
-> Also **do not** use AI to generate your pull request description, README.md or in communication. Ignoring this rule will lead to a permanent block.
-
 Equicord is a community project and welcomes any kind of contribution from anyone!
 
 We have development documentation for new contributors, which can be found at <https://docs.equicord.org>.
