@@ -12,10 +12,11 @@ permissions:
 
 env:
     UPSTREAM: https://github.com/Equicord/Equicord.git
+    UPSTREAM_BRANCH: main
 
 jobs:
     sync:
-        name: Open PR for new upstream release
+        name: Open PR for new upstream commits
         runs-on: ubuntu-latest
 
         steps:
@@ -26,52 +27,37 @@ jobs:
             - name: Fetch upstream
               run: |
                   git remote add upstream "$UPSTREAM"
-                  git fetch upstream --quiet
-
-            - name: Find latest upstream tag
-              id: tag
-              run: |
-                  latest=$(git ls-remote --tags --refs upstream 'v*' \
-                      | awk -F/ '{print $NF}' | sort -V | tail -n1)
-
-                  if [ -z "$latest" ]; then
-                      echo "No upstream tags found."
-                      echo "skip=true" >> "$GITHUB_OUTPUT"
-                      exit 0
-                  fi
-
-                  echo "Latest upstream tag: $latest"
-                  echo "tag=$latest" >> "$GITHUB_OUTPUT"
+                  git fetch upstream "$UPSTREAM_BRANCH" --quiet
 
             - name: Open sync PR
-              if: steps.tag.outputs.skip != 'true'
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  TAG: ${{ steps.tag.outputs.tag }}
               run: |
-                  git fetch upstream tag "$TAG" --quiet
+                  ref="upstream/$UPSTREAM_BRANCH"
 
-                  # Already contains this release? Nothing to do.
-                  if git merge-base --is-ancestor "$TAG" HEAD; then
-                      echo "$TAG is already merged into main. Nothing to do."
+                  # main already contains everything from upstream? Nothing to do.
+                  if git merge-base --is-ancestor "$ref" HEAD; then
+                      echo "main is up to date with $ref. Nothing to do."
                       exit 0
                   fi
 
-                  branch="upstream-sync/$TAG"
-
-                  # PR branch already exists on the remote? Leave it for review.
-                  if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-                      echo "Branch $branch already exists. A PR is likely open already."
+                  # Don't stack PRs — if a sync PR is already open, leave it for review.
+                  open=$(gh pr list --state open --json headRefName \
+                      --jq '[.[] | select(.headRefName | startswith("upstream-sync/"))] | length')
+                  if [ "$open" -gt 0 ]; then
+                      echo "A sync PR is already open. Merge it before syncing again."
                       exit 0
                   fi
+
+                  short=$(git rev-parse --short "$ref")
+                  branch="upstream-sync/$short"
 
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
-
                   git checkout -b "$branch"
 
                   conflicts=0
-                  if ! git merge --no-edit "$TAG"; then
+                  if ! git merge --no-edit "$ref"; then
                       conflicts=1
                       # Commit the conflicted state so the PR can be opened for manual resolution.
                       git add -A
@@ -80,12 +66,13 @@ jobs:
 
                   git push origin "$branch"
 
+                  commit_url="https://github.com/Equicord/Equicord/commit/$short"
                   if [ "$conflicts" = "1" ]; then
-                      title="⚠️ Sync upstream $TAG (conflicts — needs manual resolution)"
-                      body="Automated sync of upstream release [\`$TAG\`](https://github.com/Equicord/Equicord/releases/tag/$TAG).\n\n**This merge has conflicts.** Resolve the conflict markers on this branch before merging."
+                      title="⚠️ Sync upstream ($short) — conflicts"
+                      body="Automated sync with upstream [\`$short\`]($commit_url).\n\n**This merge has conflicts.** Resolve the conflict markers on this branch before merging."
                   else
-                      title="Sync upstream $TAG"
-                      body="Automated sync of upstream release [\`$TAG\`](https://github.com/Equicord/Equicord/releases/tag/$TAG).\n\nMerges cleanly. Review the changes and merge to stay up to date."
+                      title="Sync upstream ($short)"
+                      body="Automated sync with upstream [\`$short\`]($commit_url).\n\nMerges cleanly. Review the changes and merge to stay up to date."
                   fi
 
                   printf "%b" "$body" | gh pr create \
