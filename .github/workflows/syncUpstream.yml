@@ -16,7 +16,7 @@ env:
 
 jobs:
     sync:
-        name: Open PR for new upstream commits
+        name: Merge upstream into main
         runs-on: ubuntu-latest
 
         steps:
@@ -29,7 +29,7 @@ jobs:
                   git remote add upstream "$UPSTREAM"
                   git fetch upstream "$UPSTREAM_BRANCH" --quiet
 
-            - name: Open sync PR
+            - name: Sync
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
@@ -41,42 +41,38 @@ jobs:
                       exit 0
                   fi
 
-                  # Don't stack PRs — if a sync PR is already open, leave it for review.
+                  # A conflict PR from a previous run is still open? Wait for it to be resolved.
                   open=$(gh pr list --state open --json headRefName \
                       --jq '[.[] | select(.headRefName | startswith("upstream-sync/"))] | length')
                   if [ "$open" -gt 0 ]; then
-                      echo "A sync PR is already open. Merge it before syncing again."
+                      echo "An unresolved sync PR is already open. Resolve/merge it first."
                       exit 0
                   fi
 
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  if git merge --no-edit "$ref"; then
+                      # Clean merge — push straight to main, no PR needed.
+                      git push origin "HEAD:$UPSTREAM_BRANCH"
+                      echo "Cleanly merged $ref into main."
+                      exit 0
+                  fi
+
+                  # Conflicts — commit the conflicted merge onto a branch and open a PR to resolve.
                   short=$(git rev-parse --short "$ref")
                   branch="upstream-sync/$short"
 
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git checkout -b "$branch"
-
-                  conflicts=0
-                  if ! git merge --no-edit "$ref"; then
-                      conflicts=1
-                      # Commit the conflicted state so the PR can be opened for manual resolution.
-                      git add -A
-                      git commit --no-edit
-                  fi
-
+                  git add -A
+                  git commit --no-edit
+                  git branch "$branch"
                   git push origin "$branch"
 
                   commit_url="https://github.com/Equicord/Equicord/commit/$short"
-                  if [ "$conflicts" = "1" ]; then
-                      title="⚠️ Sync upstream ($short) — conflicts"
-                      body="Automated sync with upstream [\`$short\`]($commit_url).\n\n**This merge has conflicts.** Resolve the conflict markers on this branch before merging."
-                  else
-                      title="Sync upstream ($short)"
-                      body="Automated sync with upstream [\`$short\`]($commit_url).\n\nMerges cleanly. Review the changes and merge to stay up to date."
-                  fi
+                  body="Auto-merging upstream [\`$short\`]($commit_url) hit **conflicts** with your own changes.\n\nResolve the conflict markers on this branch, then merge. Until this is merged, no further upstream syncs will run."
 
                   printf "%b" "$body" | gh pr create \
-                      --base main \
+                      --base "$UPSTREAM_BRANCH" \
                       --head "$branch" \
-                      --title "$title" \
+                      --title "⚠️ Sync upstream ($short) — conflicts" \
                       --body-file -
