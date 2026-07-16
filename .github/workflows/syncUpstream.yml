@@ -8,6 +8,7 @@ on:
 
 permissions:
     contents: write
+    issues: write
 
 env:
     UPSTREAM: https://github.com/Equicord/Equicord.git
@@ -29,6 +30,8 @@ jobs:
                   git fetch upstream "$UPSTREAM_BRANCH" --quiet
 
             - name: Sync
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   ref="upstream/$UPSTREAM_BRANCH"
 
@@ -41,10 +44,15 @@ jobs:
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
+                  # Anything auto-resolved below is collected here and reported as a
+                  # GitHub issue after the push, so it never goes unnoticed.
+                  report="$RUNNER_TEMP/sync-report.md"
+                  : > "$report"
+
                   # Merge upstream. Conflicts always resolve in the fork's favor:
                   # -X ours keeps our side of conflicting hunks, and the loop below
                   # settles delete/modify conflicts the same way (our deletion or our
-                  # file wins). Everything auto-resolved is listed in the job summary.
+                  # file wins).
                   if ! git merge --no-edit "$ref"; then
                       conflicts=$(git diff --name-only --diff-filter=U)
                       git merge --abort
@@ -64,7 +72,10 @@ jobs:
                           echo '```'
                           echo "$conflicts"
                           echo '```'
-                      } >> "$GITHUB_STEP_SUMMARY"
+                          echo "Upstream's side of these hunks/files was discarded. See what they wanted with:"
+                          echo '`git diff main upstream/main -- <file>`'
+                          echo ""
+                      } >> "$report"
                   fi
 
                   # Keep CLAUDE.md current with upstream's .rules dev guide (we don't track .rules
@@ -92,12 +103,26 @@ jobs:
                       git checkout origin/main -- .github/workflows
                       git commit -m "ci: skip upstream workflow changes"
                       {
-                          echo "### Upstream workflow changes skipped (apply manually if wanted)"
+                          echo "### Upstream workflow changes skipped"
                           echo '```'
                           echo "$skipped"
                           echo '```'
-                      } >> "$GITHUB_STEP_SUMMARY"
+                          echo "The sync bot can't push workflow files. Apply these manually if wanted:"
+                          echo '`git checkout upstream/main -- <file>` then commit and push yourself.'
+                          echo ""
+                      } >> "$report"
                   fi
 
                   git push origin "HEAD:$UPSTREAM_BRANCH"
                   echo "Synced $ref into main."
+
+                  if [ -s "$report" ]; then
+                      cat "$report" >> "$GITHUB_STEP_SUMMARY"
+                      short=$(git rev-parse --short "$ref")
+                      gh label create upstream-sync --color D93F0B \
+                          --description "Sync auto-resolved something, take a look" 2>/dev/null || true
+                      gh issue create \
+                          --title "Upstream sync ($short): auto-resolutions to review" \
+                          --label upstream-sync \
+                          --body-file "$report"
+                  fi
