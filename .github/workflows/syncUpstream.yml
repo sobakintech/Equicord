@@ -8,6 +8,7 @@ on:
 
 permissions:
     contents: write
+    pull-requests: write
     issues: write
 
 env:
@@ -41,40 +42,76 @@ jobs:
                       exit 0
                   fi
 
+                  # A conflict PR from a previous run is still open? Wait for it to be resolved.
+                  open=$(gh pr list --state open --json headRefName \
+                      --jq '[.[] | select(.headRefName | startswith("upstream-sync/"))] | length')
+                  if [ "$open" -gt 0 ]; then
+                      echo "An unresolved sync PR is already open. Resolve/merge it first."
+                      exit 0
+                  fi
+
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
-                  # Anything auto-resolved below is collected here and reported as a
-                  # GitHub issue after the push, so it never goes unnoticed.
                   report="$RUNNER_TEMP/sync-report.md"
                   : > "$report"
 
-                  # Merge upstream. Conflicts always resolve in the fork's favor:
-                  # -X ours keeps our side of conflicting hunks, and the loop below
-                  # settles delete/modify conflicts the same way (our deletion or our
-                  # file wins).
                   if ! git merge --no-edit "$ref"; then
-                      conflicts=$(git diff --name-only --diff-filter=U)
-                      git merge --abort
-                      if ! git merge --no-edit -X ours "$ref"; then
-                          git diff --name-only --diff-filter=U -z |
-                              while IFS= read -r -d '' p; do
-                                  if git checkout --ours -- "$p" 2>/dev/null; then
+                      # Auto-resolve the structural noise, fork side wins:
+                      # anything we deleted stays deleted, and fork-managed meta
+                      # files keep our version. Real code conflicts stay unmerged.
+                      auto=""
+                      while IFS= read -r -d '' p; do
+                          if ! git ls-files -u -- "$p" | awk '{ print $3 }' | grep -qx 2; then
+                              # no "ours" stage: we deleted it, keep it deleted
+                              git rm -qf --ignore-unmatch -- "$p"
+                              auto+="$p (kept deleted)"$'\n'
+                          else
+                              case "$p" in
+                                  CLAUDE.md|CLAUDE.custom.md|CONTRIBUTING.md|README.md|.gitignore|.github/*)
+                                      git checkout --ours -- "$p"
                                       git add -- "$p"
-                                  else
-                                      git rm -qf --ignore-unmatch -- "$p"
-                                  fi
-                              done
+                                      auto+="$p (kept ours)"$'\n'
+                                      ;;
+                              esac
+                          fi
+                      done < <(git diff --name-only --diff-filter=U -z)
+
+                      # Real conflicts remain: commit them (markers included) onto a
+                      # branch and open a PR for manual resolution.
+                      remaining=$(git diff --name-only --diff-filter=U)
+                      if [ -n "$remaining" ]; then
+                          short=$(git rev-parse --short "$ref")
+                          branch="upstream-sync/$short"
+                          # The bot can't push workflow file changes: pin .github/workflows
+                          # to exactly what main has, or GitHub rejects the branch push.
+                          git rm -rqf --ignore-unmatch -- .github/workflows
+                          git checkout origin/main -- .github/workflows 2>/dev/null || true
+                          git add -A
                           git commit --no-edit
+                          git branch "$branch"
+                          git push origin "$branch"
+                          {
+                              echo "Merging upstream [\`$short\`](https://github.com/Equicord/Equicord/commit/$short) hit real conflicts with your changes:"
+                              echo '```'
+                              echo "$remaining"
+                              echo '```'
+                              echo "Resolve the conflict markers on this branch, then merge. Until this is merged, no further upstream syncs will run."
+                          } | gh pr create \
+                              --base "$UPSTREAM_BRANCH" \
+                              --head "$branch" \
+                              --title "Sync upstream ($short): conflicts need manual resolution" \
+                              --body-file -
+                          exit 0
                       fi
+
+                      # Only structural noise was auto-resolved: finish the merge.
+                      git commit --no-edit
                       {
-                          echo "### Conflicts auto-resolved (fork side kept)"
+                          echo "### Auto-resolved conflicts (fork side kept)"
                           echo '```'
-                          echo "$conflicts"
+                          echo "$auto"
                           echo '```'
-                          echo "Upstream's side of these hunks/files was discarded. See what they wanted with:"
-                          echo '`git diff main upstream/main -- <file>`'
-                          echo ""
                       } >> "$report"
                   fi
 
@@ -95,12 +132,12 @@ jobs:
                   fi
 
                   # GITHUB_TOKEN can't push workflow file changes, so .github/workflows is
-                  # fork-managed: revert anything the merge changed there and list it for
+                  # fork-managed: revert anything the merge changed there and flag it for
                   # manual review instead of failing the push.
                   if ! git diff --quiet origin/main HEAD -- .github/workflows; then
                       skipped=$(git diff --name-status origin/main HEAD -- .github/workflows)
-                      git rm -rq --ignore-unmatch -- .github/workflows
-                      git checkout origin/main -- .github/workflows
+                      git rm -rqf --ignore-unmatch -- .github/workflows
+                      git checkout origin/main -- .github/workflows 2>/dev/null || true
                       git commit -m "ci: skip upstream workflow changes"
                       {
                           echo "### Upstream workflow changes skipped"
@@ -109,8 +146,8 @@ jobs:
                           echo '```'
                           echo "The sync bot can't push workflow files. Apply these manually if wanted:"
                           echo '`git checkout upstream/main -- <file>` then commit and push yourself.'
-                          echo ""
                       } >> "$report"
+                      skipped_workflows=1
                   fi
 
                   git push origin "HEAD:$UPSTREAM_BRANCH"
@@ -118,11 +155,15 @@ jobs:
 
                   if [ -s "$report" ]; then
                       cat "$report" >> "$GITHUB_STEP_SUMMARY"
+                  fi
+                  # Skipped workflow changes are the one thing that needs eyes on it:
+                  # surface those as an issue. Routine auto-resolutions stay in the summary.
+                  if [ "${skipped_workflows:-0}" = 1 ]; then
                       short=$(git rev-parse --short "$ref")
                       gh label create upstream-sync --color D93F0B \
-                          --description "Sync auto-resolved something, take a look" 2>/dev/null || true
+                          --description "Upstream sync needs a look" 2>/dev/null || true
                       gh issue create \
-                          --title "Upstream sync ($short): auto-resolutions to review" \
+                          --title "Upstream sync ($short): workflow changes skipped" \
                           --label upstream-sync \
                           --body-file "$report"
                   fi
