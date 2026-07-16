@@ -57,7 +57,13 @@ jobs:
                   if ! git merge --no-edit "$ref"; then
                       # Our version always wins for these: keep our copies, keep our deletions.
                       ours_keep=("CLAUDE.md" "CLAUDE.custom.md" "CONTRIBUTING.md")
-                      ours_remove=(".rules" "AGENTS.md" "GEMINI.md" ".github/pull_request_template.md" ".github/ISSUE_TEMPLATE")
+                      ours_remove=(
+                          ".rules" "AGENTS.md" "GEMINI.md"
+                          ".github/pull_request_template.md" ".github/ISSUE_TEMPLATE"
+                          ".github/workflows/build.yml" ".github/workflows/buildBranches.yml"
+                          ".github/workflows/nixosBuild.yml" ".github/workflows/publish.yml"
+                          ".github/workflows/reportBrokenPlugins.yml"
+                      )
                       for p in "${ours_keep[@]}"; do
                           git checkout --ours -- "$p" 2>/dev/null || true
                           git add -- "$p" 2>/dev/null || true
